@@ -73,6 +73,7 @@
   Do we download with http or https?
 
 """
+import sys
 
 # APT Method Interface Message definition
 # The first line of each message is called the message header. The first 3
@@ -268,6 +269,34 @@ def serialize_apt_message(message_data):
 
   return message_str
 
+
+def receive_apt_message():
+  message_str = ""
+  while True:
+    # Read from stdin line by line (does not strip newline character)
+    # NOTE: This may block forever
+    line = sys.stdin.readline()
+
+    # Blank line denotes message end (EOF)
+    if line == "\n":
+      break
+
+    # Empty line denotes end of file (EOF), but we should return on EOM before.
+
+    if not line:
+      raise Exception("EOF (empty line) came before EOM (blank line)."
+          "Something is odd.")
+
+    # The line is not empty and not a blank newline so we have a message
+    message_str += line
+
+  return deserialize_apt_message(message_str)
+
+
+def write_apt_message(message):
+  message_str = serialize_apt_message(message)
+  sys.stdout.write(message_str)
+  sys.stdout.flush()
 
 
 def transport():
