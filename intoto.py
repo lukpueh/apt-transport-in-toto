@@ -300,10 +300,97 @@ def write_apt_message(message):
 
 
 def transport():
-  """Loop to read messages from stdin, write messages to stdout, download
-  buildinfo, run in-toto and report back to apt until done. """
-  pass
+  """Download buildinfo and run in-toto based on communication with apt.
 
+  """
+  # Send 100 Capabilities
+  write_apt_message({
+    "code": 100,
+    "info": "Capabilities",
+    "fields": {
+        # Send configuration to the method.
+        "Send-Config": "true",
+        # Requires that only one instance of the method be run This is a yes/no value
+        "Single-Instance": "yes",
+      }
+    })
+
+  # Receive 601 Configuration
+  message = receive_apt_message()
+  if message.get("code") != 601:
+    raise Exception("Expected 601 Configuration. Got: {}.".format(message))
+
+  message.get("Config-Item")
+
+  # TODO:
+  # Should we do something with config-item?
+  # If not, we might not even request it above
+
+  # Receive 600 URI Acquire
+  message = receive_apt_message()
+  if message.get("code") != 600:
+    raise Exception("Expected 601 Configuration. Got: {}.".format(message))
+
+  uri = message.get("URI")
+  filename = message.get("Filename")
+  last_modified = message.get("Last-Modified")
+
+  # TODO:
+  # Get size of file at URI
+  size = 10 # Replace
+  # Get real last modified of file at URI
+  real_last_modified = last_modified # Replace
+  # Compare real last modified of file at URI with last modified sent by apt
+  # If something is awry send 4xx
+  # write_apt_message({
+  #   "code": 4xx,
+  #   ...
+
+
+  # Send 200 URI Start
+  write_apt_message({
+    "code": 200,
+    "info": "URI Start",
+    "fields": {
+        "URI": uri,
+        "Size": size,
+        "Last-Modified": real_last_modified,
+      }
+    })
+
+  # TODO:
+  # Create tmp dir
+  # Download file from URI and write to tmp dir
+  # Download link/layout and write to tmp dir
+  # Perform in-toto verification
+  # Move file to filename
+
+  # If download or in-toto verification failed send 4xx
+  # write_apt_message({
+  #   "code": 4xx,
+  #   ...
+
+  md5 = "deadbeef"
+  sha1 = "deadbeef"
+  sha256 = "deadbeef"
+  sha512 = "deadbeef"
+
+  # If everything is okay send 201 URI Done
+  write_apt_message({
+    "code": 201,
+    "info": "URI Done",
+    "fields": {
+        "URI": uri,
+        "Size": size,
+        "Last-Modified": real_last_modified,
+        "Filename": filename,
+        "MD5-Hash": md5,
+        "MD5Sum-Hash": md5,
+        "SHA1-Hash": sha1,
+        "SHA256-Hash": sha256,
+        "SHA512-Hash": sha512
+      }
+    })
 
 
 if __name__ == "__main__":
