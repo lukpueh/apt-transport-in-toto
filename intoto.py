@@ -282,7 +282,8 @@ def receive_apt_message():
       break
 
     # Empty line denotes end of file (EOF), but we should return on EOM before.
-
+    # FIXME: From communication test with apt it appears that this assumption
+    # is not true. But I don't know why yet.
     if not line:
       raise Exception("EOF (empty line) came before EOM (blank line)."
           "Something is odd.")
