@@ -82,6 +82,15 @@
 """
 import sys
 
+import logging
+import logging.handlers
+
+# TODO: Should we setup a SysLogHandler and write to /var/log/apt/intoto ?
+LOG_FILE = "/tmp/intoto.log"
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(logging.handlers.RotatingFileHandler(LOG_FILE))
+
 # APT Method Interface Message definition
 # The first line of each message is called the message header. The first 3
 # digits (called the Status Code) have the usual meaning found in the http
@@ -297,12 +306,13 @@ def receive_apt_message():
 
     # The line is not empty and not a blank newline so we have a message
     message_str += line
-
+  logger.info(message_str)
   return deserialize_apt_message(message_str)
 
 
 def write_apt_message(message):
   message_str = serialize_apt_message(message)
+  logger.info(message_str)
   sys.stdout.write(message_str)
   sys.stdout.flush()
 
