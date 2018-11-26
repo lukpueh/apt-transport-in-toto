@@ -195,7 +195,7 @@ def deserialize_apt_message(message_str):
     "code": <status code>,
     "info": "<status info>",
     "fields" {
-      "<header field name>": "<value>",
+      "<header field name>": ["<value>", ...],
       ...
   }
 
@@ -227,7 +227,6 @@ def deserialize_apt_message(message_str):
         .format(code, info))
 
   # Deserialize header fields
-  # FIXME: Can't use dict. Header field names of a message are not unique!!
   header_fields = {}
   for line in lines:
     header_field_parts = line.split(":")
@@ -238,11 +237,14 @@ def deserialize_apt_message(message_str):
     field_name = header_field_parts.pop(0).strip()
 
     if field_name not in APT_MESSAGE_TYPES[code]["fields"]:
-      raise Exception("Unsupported header field for message code {}: {}"
+      logger.warning("Unsupported header field for message code {}: {}"
           .format(code, field_name))
 
     field_value = " ".join(header_field_parts).strip()
-    header_fields[field_name] = field_value
+    if not header_fields.get(field_name):
+      header_fields[field_name] = [field_value]
+    else:
+      header_fields[field_name].append(field_value)
 
   # Construct message data
   message_data = {
@@ -263,8 +265,12 @@ def serialize_apt_message(message_data):
     "info": "<status info>",
     "fields" {
       "<header field name>": "<value>",
+      "<header field name>": ["<value>"],
       ...
   }
+  Header fields may not be unique. Hence, we accept a list of header field
+  values for a given header value name. For convenience, header field values
+  for unique header field names may also be passed as strings.
 
   NOTE: We write whatever we get, without checking the format (see
   APT_MESSAGE_TYPES). So it is up to the caller to pass well-formed data and
@@ -277,8 +283,13 @@ def serialize_apt_message(message_data):
       message_data["info"])
 
   # Message header fields and values
-  for key, val in message_data["fields"].iteritems():
-    message_str += "{}: {}\n".format(key, val)
+  for field_name, field_value in message_data["fields"].iteritems():
+    # Convenience (allow to pass a header field value)
+    if not isinstance(field_value, list):
+      field_value = [field_value]
+
+    for val in field_value:
+      message_str += "{}: {}\n".format(field_name, val)
 
   # Blank line mark end of message
   message_str += "\n"
