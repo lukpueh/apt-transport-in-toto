@@ -13,22 +13,41 @@
   See LICENSE for licensing information.
 
 <Purpose>
-  Provide an in-toto enabled transport method for apt that downloads a debian
-  package and in-toto link metadata generated on a rebuilder.
+  Provide an in-toto transport method for apt to perform in-toto
+  verification using in-toto link metadata fetched from a rebuilder.
 
-  The transport communicates with apt over the APT method interface
-  See http://www.fifi.org/doc/libapt-pkg-doc/method.html/ch2.html
+  - This program must be available as executable in
+      `/usr/lib/apt/methods/intoto`.
+  - The in-toto transport can be used by adding the `intoto` method name to
+    URIs in `/etc/apt/sources.list` or `/etc/apt/sources.list.d/*`, e.g.
+      `deb intoto://ftp.us.debian.org/debian/ jessie main contrib`
+  - The in-toto transport uses the http transport to download the target debian
+    packages.
+  - Verification is performed on `apt-get install`, i.e. when we receive
+    a `600 URI Acquire` message for a debian package.
+  - Verification is not performed on `apt-get update`, i.e. when we receive
+    a `600 URI Acquire` message with a header field `Index-File: true`.
+  - A root layout must be present on the client system, the 
+    path may be specified in the method's config file
+    `/etc/apt/apt.conf.d/intoto`.
+  - Corresponding layout root keys must be present in the client gpg chain
+  - The base path of the remote rebuilder that hosts in-toto link metadata may
+    be specified in the client method config file.
+  - The full path of the in-toto link metadata for a given package is inferred
+    from the configured base path and the package URI in `600 URI Acquire`.
+  - That information may also be used for in-toto layout parameter
+    substitution.
 
-  This program must be available as executable in
-    /usr/lib/apt/methods/intoto
 
-  Configuration can be provided in:
-    /etc/apt/apt.conf.d/intoto
+<Resources>
+  APT method interface
+  http://www.fifi.org/doc/libapt-pkg-doc/method.html/ch2.html
+
+  Apt Configuration
   See https://manpages.debian.org/stretch/apt/apt.conf.5.en.html for syntax
 
-  Path style for sources is:
-    deb intoto://<???> jessie main contrib
-  See https://wiki.debian.org/SourcesList for sources syntax
+  Apt sources list syntax
+  See https://wiki.debian.org/SourcesList
 
 
   The flow of messages starts with the method sending out a 100 Capabilities
@@ -59,18 +78,6 @@
             to file   |       201 URI Done       |
                       | +----------------------> |
 
-
-
-<TODO>
-  What is downloaded where?
-    - link files will are available on rebuilder, e.g.
-      reproducible-builds.engineering.nyu.edu
-    - should we configure that url in sources or in /etc/apt/apt.conf.d/intoto?
-    - where does the layout come from?
-    - where do the layout keys come from?
-    - where does the actual debian package come from?
-
-  Do we download with http or https?
 
 """
 import sys
