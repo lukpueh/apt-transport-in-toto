@@ -82,16 +82,19 @@
 """
 import os
 import sys
-
+import time
 import logging
 import logging.handlers
-import subprocess32
+import subprocess32 as subprocess
 
 # TODO: Should we setup a SysLogHandler and write to /var/log/apt/intoto ?
 LOG_FILE = "/tmp/intoto.log"
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.handlers.RotatingFileHandler(LOG_FILE))
+
+
+APT_METHOD_HTTP = os.path.join(os.path.dirname(sys.argv[0]), "http")
 
 # APT Method Interface Message definition
 # The first line of each message is called the message header. The first 3
@@ -181,7 +184,7 @@ APT_MESSAGE_TYPES = {
 }
 
 
-def deserialize_apt_message(message_str):
+def deserialize_one(message_str):
   """Parse raw message string as it may be read from stdin and return a
   dictionary that contains message header status code and info and an optional
   fields dictionary of additional headers and their values.
@@ -190,15 +193,13 @@ def deserialize_apt_message(message_str):
   details about formats.
   NOTE: We are pretty strict about the format of messages that we receive.
   Given the vagueness of the specification, we might be too strict.
-  FIXME: First communication tests on debian show that we are too strict.
-  They send definitely send stuff that's not defined
 
   {
     "code": <status code>,
     "info": "<status info>",
-    "fields" {
-      "<header field name>": ["<value>", ...],
-      ...
+    "fields": [
+      ("<header field name>", "<value>"),
+    ]
   }
 
   NOTE: Message field values are NOT deserialized here, e.g. the Last-Modified
@@ -229,7 +230,7 @@ def deserialize_apt_message(message_str):
         .format(code, info))
 
   # Deserialize header fields
-  header_fields = {}
+  header_fields = []
   for line in lines:
     header_field_parts = line.split(":")
 
@@ -242,11 +243,8 @@ def deserialize_apt_message(message_str):
       logger.warning("Unsupported header field for message code {}: {}"
           .format(code, field_name))
 
-    field_value = " ".join(header_field_parts).strip()
-    if not header_fields.get(field_name):
-      header_fields[field_name] = [field_value]
-    else:
-      header_fields[field_name].append(field_value)
+    field_value = ":".join(header_field_parts).strip()
+    header_fields.append((field_name, field_value))
 
   # Construct message data
   message_data = {
@@ -259,174 +257,120 @@ def deserialize_apt_message(message_str):
   return message_data
 
 
-def serialize_apt_message(message_data):
+def serialize_one(message_data):
   """Create a message string that may be written to stdout. Message data
   is expected to have the following format:
   {
     "code": <status code>,
     "info": "<status info>",
-    "fields" {
-      "<header field name>": "<value>",
-      "<header field name>": ["<value>"],
-      ...
+    "fields": [
+      ("<header field name>", "<value>"),
+    ]
   }
-  Header fields may not be unique. Hence, we accept a list of header field
-  values for a given header value name. For convenience, header field values
-  for unique header field names may also be passed as strings.
-
-  NOTE: We write whatever we get, without checking the format (see
-  APT_MESSAGE_TYPES). So it is up to the caller to pass well-formed data and
-  also up to apt to tell us if we sent something bad.
 
   """
   message_str = ""
-  # Message header
-  message_str += "{} {}\n".format(message_data["code"],
-      message_data["info"])
 
-  # Message header fields and values
-  for field_name, field_value in message_data["fields"].iteritems():
-    # Convenience (allow to pass a header field value)
-    if not isinstance(field_value, list):
-      field_value = [field_value]
+  # Code must be present
+  code = message_data["code"]
+  # Convenience (if info not present, info for code is used )
+  info = message_data.get("info") or APT_MESSAGE_TYPES[code]["info"]
 
+  # Add message header
+  message_str += "{} {}\n".format(code, info)
+
+  # Add message header fields and values (must be list of tuples)
+  for field_name, field_value in message_data.get("fields", []):
     for val in field_value:
       message_str += "{}: {}\n".format(field_name, val)
 
-  # Blank line mark end of message
+  # Blank line to mark end of message
   message_str += "\n"
 
   return message_str
 
 
-def receive_apt_message():
+
+def read_one(stream):
   message_str = ""
   while True:
     # Read from stdin line by line (does not strip newline character)
     # NOTE: This may block forever
     line = sys.stdin.readline()
 
-    # Blank line denotes message end (EOF)
-    if line == "\n":
+    # Empty line denotes end of file (EOF)
+    # Blank line denotes message end (EOM)
+    if not line or line == "\n":
       break
-
-    # Empty line denotes end of file (EOF), but we should return on EOM before.
-    # FIXME: From communication test with apt it appears that this assumption
-    # is not true. But I don't know why yet.
-    if not line:
-      raise Exception("EOF (empty line) came before EOM (blank line)."
-          "Something is odd.")
 
     # The line is not empty and not a blank newline so we have a message
     message_str += line
-  logger.info(message_str)
-  return deserialize_apt_message(message_str)
+
+  if message_str:
+    return message_str
+
+  return None
 
 
-def write_apt_message(message):
-  message_str = serialize_apt_message(message)
-  logger.info(message_str)
-  sys.stdout.write(message_str)
-  sys.stdout.flush()
+def write_one(message_str, stream):
+  if stream:
+    stream.write(message_str)
+    stream.flush()
 
 
-def transport():
+def loop():
+  """Main in-toto http loop to relay messages betwen apt and the http
+  transport method.  If apt sends a `600 URI Acquire message`, for a debian
+  package we perform in-toto verification and only relay the message if
+  verification is successful.
   """
+  # Start http transport in a subprocess
+  # It will do all the regular http transport work for us and send messages to
+  # the inherited `stdout`, i.e. the one that apt reads from.
+  # Messages from apt (`stdin`) are intercepted below and only forwarded once
+  # we have done our in-toto verification work 
+  proc = subprocess.Popen([APT_METHOD_HTTP], stdin=subprocess.PIPE,
+      stdout=subprocess.PIPE)
 
-  """
+  # Loop while we get messages from apt (sys.stdin) or http (proc.stdout)
+  while True:
+    message_apt = read_one(stream=sys.stdin)
+    message_http = read_one(stream=proc.stdout)
 
-  http_method = os.path.join(os.path.dirname(sys.argv[0]), "http")
-  subprocess32.run([http_method])
+    # No more messages, we are done here
+    if not message_apt or message_http:
+      return None
 
-  # # Send 100 Capabilities
-  # write_apt_message({
-  #   "code": 100,
-  #   "info": "Capabilities",
-  #   "fields": {
-  #       # Send configuration to the method.
-  #       "Send-Config": "true",
-  #       # Requires that only one instance of the method be run This is a yes/no value
-  #       "Single-Instance": "yes",
-  #     }
-  #   })
+    # Relay apt message to http
+    if message_apt:
+      write_one(message_apt + "\n", proc.stdin)
 
-  # # Receive 601 Configuration
-  # message = receive_apt_message()
-  # if message.get("code") != 601:
-  #   raise Exception("Expected 601 Configuration. Got: {}.".format(message))
+    # Relay http message to apt
+    if message_http:
+      write_one(message_http + "\n", sys.stdout)
 
-  # message.get("Config-Item")
+    # # Deserialize the message and see if it is relevant for us
+    # message_data = deserialize_one(message)
+    # if message_data.get("code") == 600:
 
-  # # TODO:
-  # # Should we do something with config-item?
-  # # If not, we might not even request it above
+    #   # not_an_index_file = (not msg_fields.get("Index-File") or
+    #   #     msg_fields.get("Index-File") == "no")
+    #   # uri = msg_fields.get("URI")
 
-  # # Receive 600 URI Acquire
-  # message = receive_apt_message()
-  # if message.get("code") != 600:
-  #   raise Exception("Expected 601 Configuration. Got: {}.".format(message))
+    #   # # We only do in-toto verification if it is 
+    #   # if uri and not_an_index_file:
+    #   logger.info("Starting in-toto verification for '{}'".format("uri"))
+    #   # TODO:
+    #   # While sending 100/101 logging or status messages:
+    #   # Parse in-toto apt method configuration (link location, layout, keys)
+    #   # Download links (to tempdir)
+    #   # Run in-toto-verify
+    #   # Should we abort and send a failure if verification fails?
+    #   logger.info("Finished in-toto verification for '{}'".format("uri"))
 
-  # uri = message.get("URI")
-  # filename = message.get("Filename")
-  # last_modified = message.get("Last-Modified")
-
-  # # TODO:
-  # # Get size of file at URI
-  # size = 10 # Replace
-  # # Get real last modified of file at URI
-  # real_last_modified = last_modified # Replace
-  # # Compare real last modified of file at URI with last modified sent by apt
-  # # If something is awry send 4xx
-  # # write_apt_message({
-  # #   "code": 4xx,
-  # #   ...
-
-
-  # # Send 200 URI Start
-  # write_apt_message({
-  #   "code": 200,
-  #   "info": "URI Start",
-  #   "fields": {
-  #       "URI": uri,
-  #       "Size": size,
-  #       "Last-Modified": real_last_modified,
-  #     }
-  #   })
-
-  # # TODO:
-  # # Create tmp dir
-  # # Download file from URI and write to tmp dir
-  # # Download link/layout and write to tmp dir
-  # # Perform in-toto verification
-  # # Move file to filename
-
-  # # If download or in-toto verification failed send 4xx
-  # # write_apt_message({
-  # #   "code": 4xx,
-  # #   ...
-
-  # md5 = "deadbeef"
-  # sha1 = "deadbeef"
-  # sha256 = "deadbeef"
-  # sha512 = "deadbeef"
-
-  # # If everything is okay send 201 URI Done
-  # write_apt_message({
-  #   "code": 201,
-  #   "info": "URI Done",
-  #   "fields": {
-  #       "URI": uri,
-  #       "Size": size,
-  #       "Last-Modified": real_last_modified,
-  #       "Filename": filename,
-  #       "MD5-Hash": md5,
-  #       "MD5Sum-Hash": md5,
-  #       "SHA1-Hash": sha1,
-  #       "SHA256-Hash": sha256,
-  #       "SHA512-Hash": sha512
-  #     }
-  #   })
+    # # Relay raw message to http transport
+    # write_one(message + "\n", stream=proc.stdin)
 
 
 if __name__ == "__main__":
-  transport()
+  loop()
