@@ -341,15 +341,14 @@ in main thread
 alternting pop from queues using locks and write to corresponding out stream
 
 """
-def read_to_queue(stream, queue):
+def read_to_queue(stream, queue, lock):
   # This blocks until a message is availabe
   while True:
     msg = read_one(stream)
     if msg:
-      queue.put(msg)
-      return
-
-
+      lock.acquire()
+      queue.append(msg)
+      lock.release()
 
 
 
@@ -364,35 +363,61 @@ def loop():
   # the inherited `stdout`, i.e. the one that apt reads from.
   # Messages from apt (`stdin`) are intercepted below and only forwarded once
   # we have done our in-toto verification work
-  # http_proc = subprocess.Popen([APT_METHOD_HTTP], stdin=subprocess.PIPE,
-  #     stdout=subprocess.PIPE)
-
-
   http_proc = subprocess.Popen([APT_METHOD_HTTP], stdin=subprocess.PIPE,
       stdout=subprocess.PIPE)
 
+  # Get message from
+  msg = read_one(http_proc.stdout)
+  logger.info("message from http")
+  logger.info(msg)
+  write_one(msg, sys.stdout)
 
-  http_queue = Queue.Queue()
-  http_thread = threading.Thread(target=read_to_queue, args=(http_proc.stdout, http_queue,))
-  http_thread.start()
+  msg = read_one(sys.stdin)
+  logger.info("message from apt")
+  logger.info(msg)
 
-  apt_queue = Queue.Queue()
-  apt_thread = threading.Thread(target=read_to_queue, args=(sys.stdin, apt_queue,))
-  apt_thread.start()
+  msg = read_one(sys.stdin)
+  logger.info("message from apt")
+  logger.info(msg)
+  write_one(msg, sys.stdout)
+
+  # while True:
+  #   pass
+  # msg1 = read_one(sys.stdin)
+  # msg2 = read_one(sys.stdin)
+  # write_one(msg2, http_proc.stdin)
 
 
-  while True:
-    # reading message
-    for message_queue, output_stream in \
-        [(http_queue, sys.stdout), (apt_queue, http_proc.stdin)]:
+  # http_queue = []
+  # http_lock = threading.Lock()
+  # http_thread = threading.Thread(target=read_to_queue, args=(http_proc.stdout, http_queue, http_lock))
+  # http_thread.start()
 
-      logger.info("reading queue")
-      msg = message_queue.get()
-      logger.info("read queue")
-      if msg:
-        write_one(msg, output_stream)
+  # apt_queue = []
+  # apt_lock = threading.Lock()
+  # apt_thread = threading.Thread(target=read_to_queue, args=(sys.stdin, apt_queue, apt_lock))
+  # apt_thread.start()
 
-      time.sleep(0.1)
+  # while True:
+  # time.sleep(5)
+  # http_lock.acquire()
+  # if len(http_queue):
+  #   message = http_queue.pop()
+  #   logger.info(message)
+  #   write_one(message, sys.stdout)
+  # http_lock.release()
+
+
+
+  # apt_lock.acquire()
+  # if len(apt_queue):
+  #   message = apt_queue.pop()
+  #   logger.info(message)
+  #   write_one(message, http_proc.stdin)
+  # apt_lock.release()
+
+
+  #   time.sleep(1)
 
 
   # Loop while we get messages from apt (sys.stdin) or http (proc.stdout)
