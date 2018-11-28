@@ -83,6 +83,8 @@
 import os
 import sys
 import time
+import threading
+import Queue
 import logging
 import logging.handlers
 import subprocess32 as subprocess
@@ -232,6 +234,10 @@ def deserialize_one(message_str):
   # Deserialize header fields
   header_fields = []
   for line in lines:
+    # FIXME: Should we be assert (above) that the last line is a blank line?
+    if line == "\n":
+      continue
+
     header_field_parts = line.split(":")
 
     if len(header_field_parts) < 2:
@@ -296,15 +302,14 @@ def read_one(stream):
   while True:
     # Read from stdin line by line (does not strip newline character)
     # NOTE: This may block forever
-    line = sys.stdin.readline()
+    line = stream.readline()
+    if line:
+      message_str += line
 
-    # Empty line denotes end of file (EOF)
     # Blank line denotes message end (EOM)
+    # Empty line denotes end of file (EOF)
     if not line or line == "\n":
       break
-
-    # The line is not empty and not a blank newline so we have a message
-    message_str += line
 
   if message_str:
     return message_str
@@ -313,9 +318,39 @@ def read_one(stream):
 
 
 def write_one(message_str, stream):
-  if stream:
-    stream.write(message_str)
-    stream.flush()
+  stream.write(message_str)
+  stream.flush()
+
+"""
+two queues
+ - apt_message_queue
+ - http_message_queue
+
+two locks
+ - apt_message_lock
+ - http_message_lock
+
+two threads
+ - read_on(http_proc.stdout)
+ - read_on(sys.stdin)
+
+ write to corresponding queue using corresponding lock
+
+in main thread
+
+alternting pop from queues using locks and write to corresponding out stream
+
+"""
+def read_to_queue(stream, queue):
+  # This blocks until a message is availabe
+  while True:
+    msg = read_one(stream)
+    if msg:
+      queue.put(msg)
+      return
+
+
+
 
 
 def loop():
@@ -328,26 +363,54 @@ def loop():
   # It will do all the regular http transport work for us and send messages to
   # the inherited `stdout`, i.e. the one that apt reads from.
   # Messages from apt (`stdin`) are intercepted below and only forwarded once
-  # we have done our in-toto verification work 
-  proc = subprocess.Popen([APT_METHOD_HTTP], stdin=subprocess.PIPE,
+  # we have done our in-toto verification work
+  # http_proc = subprocess.Popen([APT_METHOD_HTTP], stdin=subprocess.PIPE,
+  #     stdout=subprocess.PIPE)
+
+
+  http_proc = subprocess.Popen([APT_METHOD_HTTP], stdin=subprocess.PIPE,
       stdout=subprocess.PIPE)
 
-  # Loop while we get messages from apt (sys.stdin) or http (proc.stdout)
+
+  http_queue = Queue.Queue()
+  http_thread = threading.Thread(target=read_to_queue, args=(http_proc.stdout, http_queue,))
+  http_thread.start()
+
+  apt_queue = Queue.Queue()
+  apt_thread = threading.Thread(target=read_to_queue, args=(sys.stdin, apt_queue,))
+  apt_thread.start()
+
+
   while True:
-    message_apt = read_one(stream=sys.stdin)
-    message_http = read_one(stream=proc.stdout)
+    # reading message
+    for message_queue, output_stream in \
+        [(http_queue, sys.stdout), (apt_queue, http_proc.stdin)]:
 
-    # No more messages, we are done here
-    if not message_apt or message_http:
-      return None
+      logger.info("reading queue")
+      msg = message_queue.get()
+      logger.info("read queue")
+      if msg:
+        write_one(msg, output_stream)
 
-    # Relay apt message to http
-    if message_apt:
-      write_one(message_apt + "\n", proc.stdin)
+      time.sleep(0.1)
 
-    # Relay http message to apt
-    if message_http:
-      write_one(message_http + "\n", sys.stdout)
+
+  # Loop while we get messages from apt (sys.stdin) or http (proc.stdout)
+  # while True:
+  #   message_apt = read_one(stream=sys.stdin)
+  #   message_http = read_one(stream=proc.stdout)
+
+  #   # No more messages, we are done here
+  #   if not message_apt or message_http:
+  #     return None
+
+  #   # Relay apt message to http
+  #   if message_apt:
+  #     write_one(message_apt + "\n", proc.stdin)
+
+  #   # Relay http message to apt
+  #   if message_http:
+  #     write_one(message_http + "\n", sys.stdout)
 
     # # Deserialize the message and see if it is relevant for us
     # message_data = deserialize_one(message)
