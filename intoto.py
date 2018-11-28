@@ -297,16 +297,21 @@ def serialize_one(message_data):
 
 
 def read_one(stream):
+  """Read one apt related message from the passed stream, e.g. sys.stdin for
+  messages from apt, or subprocess.stdout for messages from a transport that we
+  open in a subprocess. The end of a message (EOM) is denoted by a blank line
+  ("\n") and end of file (EOF) is denoted by an empty line. Returns either a
+  message including a trailing blank line or None on EOF.
+
+  """
   message_str = ""
   while True:
-    # Read from stdin line by line (does not strip newline character)
-    # NOTE: This may block forever
+    # Blocking read of line from the stream, includes trailing newline char.
     line = stream.readline()
     if line:
       message_str += line
 
-    # Blank line denotes message end (EOM)
-    # Empty line denotes end of file (EOF)
+    # Break on EOM or EOF
     if not line or line == "\n":
       break
 
@@ -316,37 +321,23 @@ def read_one(stream):
   return None
 
 def write_one(message_str, stream):
+  """Write the passed message to the passed stream.
+
+  """
   stream.write(message_str)
   stream.flush()
 
-"""
-two queues
- - apt_message_queue
- - http_message_queue
-
-two locks
- - apt_message_lock
- - http_message_lock
-
-two threads
- - read_on(http_proc.stdout)
- - read_on(sys.stdin)
-
- write to corresponding queue using corresponding lock
-
-in main thread
-
-alternting pop from queues using locks and write to corresponding out stream
-
-"""
 def read_to_queue(stream, queue, lock):
-  # This blocks until a message is availabe
+  """Loop to read messages one at a time from the passed stream until EOF, i.e.
+  the returned message is None, and write to the passed queue using the passed
+  lock.
+
+  """
   while True:
     msg = read_one(stream)
     if not msg:
       return None
 
-    data = deserialize_one(msg)
     lock.acquire()
     queue.append(msg)
     lock.release()
@@ -354,37 +345,45 @@ def read_to_queue(stream, queue, lock):
 
 
 def loop():
-  """Main in-toto http loop to relay messages betwen apt and the http
-  transport method.  If apt sends a `600 URI Acquire message`, for a debian
-  package we perform in-toto verification and only relay the message if
-  verification is successful.
-  """
-  logger.info("START")
-  # Start http transport in a subprocess
-  # It will do all the regular http transport work for us and send messages to
-  # the inherited `stdout`, i.e. the one that apt reads from.
-  # Messages from apt (`stdin`) are intercepted below and only forwarded once
-  # we have done our in-toto verification work
-  # http_proc = subprocess.Popen([APT_METHOD_HTTP])
+  """Main in-toto http transport method loop to relay messages between apt and
+  the apt http transport method and inject in-toto verification upon reception
+  of a particular message.
 
+  """
+  # Start http transport in a subprocess
+  # Messages from the parent process received on sys.stdin are relayed to the
+  # subprocesses stdin and vice versa, messages written to the subprocess's
+  # stdout are relayed to the parent via sys.stdout.
   http_proc = subprocess.Popen([APT_METHOD_HTTP], stdin=subprocess.PIPE,
       stdout=subprocess.PIPE)
 
-  http_queue = []
+  # Locks for threads
+  # TODO: Maybe we can use Queue.Queue, which handles locks internally,
+  # instead of simple homemade list queues. Or maybe we don't need locks at all
+  # since we it is used to separate read and write (and not write and write)?
   http_lock = threading.Lock()
+  apt_lock = threading.Lock()
+
+  # HTTP transport message reader thread to add messages from the http
+  # transport (subprocess) to a corresponding queue.
+  http_queue = []
   http_thread = threading.Thread(target=read_to_queue, args=(http_proc.stdout,
       http_queue, http_lock))
   http_thread.daemon = True
   http_thread.start()
 
+  # APT message reader thread to add messages from apt (parent process)
+  # to a corresponding queue.
   apt_queue = []
-  apt_lock = threading.Lock()
   apt_thread = threading.Thread(target=read_to_queue, args=(sys.stdin,
       apt_queue, apt_lock))
   apt_thread.daemon = True
   apt_thread.start()
 
 
+  # Main loop to get messages from queues, i.e. apt queue and http transport
+  # queue, and relay them to the corresponding streams, injecting in-toto
+  # verification upon reception of a particular message.
   while True:
     for queue, lock, out in \
         [(apt_queue, apt_lock, http_proc.stdin),
@@ -393,90 +392,22 @@ def loop():
       lock.acquire()
       if len(queue):
         message = queue.pop(0)
+
+        # TODO: in-toto verification on 201 URI Done
+        # The http transport sends a 201 URI Done when it has downloaded the
+        # target debian package. 201 signals apt that the package can be
+        # installed. This would be a good moment to download in-toto link
+        # metadata and and perform in-toto verification. We can inform apt
+        # about our work with 210x status messages or 40x error messages and
+        # eventually, if verification succeeds relay 201 URI Done.
+
         write_one(message, out)
+
       lock.release()
 
-      if not apt_thread.is_alive():
-        return
-
-
-  # while True:
-  #   pass
-  # msg1 = read_one(sys.stdin)
-  # msg2 = read_one(sys.stdin)
-  # write_one(msg2, http_proc.stdin)
-
-
-  # http_queue = []
-  # http_lock = threading.Lock()
-  # http_thread = threading.Thread(target=read_to_queue, args=(http_proc.stdout, http_queue, http_lock))
-  # http_thread.start()
-
-  # apt_queue = []
-  # apt_lock = threading.Lock()
-  # apt_thread = threading.Thread(target=read_to_queue, args=(sys.stdin, apt_queue, apt_lock))
-  # apt_thread.start()
-
-  # while True:
-  # time.sleep(5)
-  # http_lock.acquire()
-  # if len(http_queue):
-  #   message = http_queue.pop()
-  #   logger.info(message)
-  #   write_one(message, sys.stdout)
-  # http_lock.release()
-
-
-
-  # apt_lock.acquire()
-  # if len(apt_queue):
-  #   message = apt_queue.pop()
-  #   logger.info(message)
-  #   write_one(message, http_proc.stdin)
-  # apt_lock.release()
-
-
-  #   time.sleep(1)
-
-
-  # Loop while we get messages from apt (sys.stdin) or http (proc.stdout)
-  # while True:
-  #   message_apt = read_one(stream=sys.stdin)
-  #   message_http = read_one(stream=proc.stdout)
-
-  #   # No more messages, we are done here
-  #   if not message_apt or message_http:
-  #     return None
-
-  #   # Relay apt message to http
-  #   if message_apt:
-  #     write_one(message_apt + "\n", proc.stdin)
-
-  #   # Relay http message to apt
-  #   if message_http:
-  #     write_one(message_http + "\n", sys.stdout)
-
-    # # Deserialize the message and see if it is relevant for us
-    # message_data = deserialize_one(message)
-    # if message_data.get("code") == 600:
-
-    #   # not_an_index_file = (not msg_fields.get("Index-File") or
-    #   #     msg_fields.get("Index-File") == "no")
-    #   # uri = msg_fields.get("URI")
-
-    #   # # We only do in-toto verification if it is 
-    #   # if uri and not_an_index_file:
-    #   logger.info("Starting in-toto verification for '{}'".format("uri"))
-    #   # TODO:
-    #   # While sending 100/101 logging or status messages:
-    #   # Parse in-toto apt method configuration (link location, layout, keys)
-    #   # Download links (to tempdir)
-    #   # Run in-toto-verify
-    #   # Should we abort and send a failure if verification fails?
-    #   logger.info("Finished in-toto verification for '{}'".format("uri"))
-
-    # # Relay raw message to http transport
-    # write_one(message + "\n", stream=proc.stdin)
+    # Terminate when apt sends an EOF
+    if not apt_thread.is_alive():
+      return
 
 
 if __name__ == "__main__":
