@@ -84,7 +84,6 @@ import os
 import sys
 import time
 import threading
-import Queue
 import logging
 import logging.handlers
 import subprocess32 as subprocess
@@ -94,7 +93,6 @@ LOG_FILE = "/tmp/intoto.log"
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.handlers.RotatingFileHandler(LOG_FILE))
-
 
 APT_METHOD_HTTP = os.path.join(os.path.dirname(sys.argv[0]), "http")
 
@@ -231,12 +229,13 @@ def deserialize_one(message_str):
     raise Exception("Invalid message header info for status code {}: {}"
         .format(code, info))
 
+  # TODO: Should we assert that the last line is a blank line?
+  if lines and not lines[-1]:
+    lines.pop()
+
   # Deserialize header fields
   header_fields = []
   for line in lines:
-    # FIXME: Should we be assert (above) that the last line is a blank line?
-    if line == "\n":
-      continue
 
     header_field_parts = line.split(":")
 
@@ -316,7 +315,6 @@ def read_one(stream):
 
   return None
 
-
 def write_one(message_str, stream):
   stream.write(message_str)
   stream.flush()
@@ -345,10 +343,13 @@ def read_to_queue(stream, queue, lock):
   # This blocks until a message is availabe
   while True:
     msg = read_one(stream)
-    if msg:
-      lock.acquire()
-      queue.append(msg)
-      lock.release()
+    if not msg:
+      return None
+
+    data = deserialize_one(msg)
+    lock.acquire()
+    queue.append(msg)
+    lock.release()
 
 
 
@@ -358,28 +359,46 @@ def loop():
   package we perform in-toto verification and only relay the message if
   verification is successful.
   """
+  logger.info("START")
   # Start http transport in a subprocess
   # It will do all the regular http transport work for us and send messages to
   # the inherited `stdout`, i.e. the one that apt reads from.
   # Messages from apt (`stdin`) are intercepted below and only forwarded once
   # we have done our in-toto verification work
+  # http_proc = subprocess.Popen([APT_METHOD_HTTP])
+
   http_proc = subprocess.Popen([APT_METHOD_HTTP], stdin=subprocess.PIPE,
       stdout=subprocess.PIPE)
 
-  # Get message from
-  msg = read_one(http_proc.stdout)
-  logger.info("message from http")
-  logger.info(msg)
-  write_one(msg, sys.stdout)
+  http_queue = []
+  http_lock = threading.Lock()
+  http_thread = threading.Thread(target=read_to_queue, args=(http_proc.stdout,
+      http_queue, http_lock))
+  http_thread.daemon = True
+  http_thread.start()
 
-  msg = read_one(sys.stdin)
-  logger.info("message from apt")
-  logger.info(msg)
+  apt_queue = []
+  apt_lock = threading.Lock()
+  apt_thread = threading.Thread(target=read_to_queue, args=(sys.stdin,
+      apt_queue, apt_lock))
+  apt_thread.daemon = True
+  apt_thread.start()
 
-  msg = read_one(sys.stdin)
-  logger.info("message from apt")
-  logger.info(msg)
-  write_one(msg, sys.stdout)
+
+  while True:
+    for queue, lock, out in \
+        [(apt_queue, apt_lock, http_proc.stdin),
+         (http_queue, http_lock, sys.stdout)]:
+
+      lock.acquire()
+      if len(queue):
+        message = queue.pop(0)
+        write_one(message, out)
+      lock.release()
+
+      if not apt_thread.is_alive():
+        return
+
 
   # while True:
   #   pass
