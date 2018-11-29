@@ -244,7 +244,7 @@ def deserialize_one(message_str):
   """
   lines = message_str.splitlines()
   if not lines:
-    raise Exception("Invalid empty message: {}".format(message_str))
+    raise Exception("Invalid empty message:\n{}".format(message_str))
 
   # Deserialize message header
   message_header = lines.pop(0)
@@ -252,17 +252,19 @@ def deserialize_one(message_str):
 
   # TODO: Are we too strict about the format (should we not care about info?)
   if len(message_header_parts) < 2:
-    raise Exception("Invalid message header: {}".format(message_header))
+    raise Exception("Invalid message header: {}, message was:\n{}"
+        .format(message_header, message_str))
 
   code = int(message_header_parts.pop(0))
   if code not in MESSAGE_TYPE.keys():
-    raise Exception("Invalid message header status code: {}".format(code))
+    raise Exception("Invalid message header status code: {}, message was:\n{}"
+        .format(code, message_str))
 
   # TODO: Are we too strict about the format (should we not care about info?)
   info = " ".join(message_header_parts).strip()
   if info != MESSAGE_TYPE[code]["info"]:
-    raise Exception("Invalid message header info for status code {}: {}"
-        .format(code, info))
+    raise Exception("Invalid message header info for status code {}:\n{},"
+        " message was: {}".format(code, info, message_str))
 
   # TODO: Should we assert that the last line is a blank line?
   if lines and not lines[-1]:
@@ -275,13 +277,14 @@ def deserialize_one(message_str):
     header_field_parts = line.split(":")
 
     if len(header_field_parts) < 2:
-      raise Exception("Invalid header field: {}".format(line))
+      raise Exception("Invalid header field: {}, message was:\n{}"
+          .format(line, message_str))
 
     field_name = header_field_parts.pop(0).strip()
 
     if field_name not in MESSAGE_TYPE[code]["fields"]:
-      logger.warning("Unsupported header field for message code {}: {}"
-          .format(code, field_name))
+      logger.warning("Unsupported header field for message code {}: {},"
+          " message was:\n{}".format(code, field_name, message_str))
 
     field_value = ":".join(header_field_parts).strip()
     header_fields.append((field_name, field_value))
