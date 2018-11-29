@@ -31,7 +31,7 @@
       `600 URI Acquire` to check if a requested URI is an index file
       (`Index-File: true`), issued, e.g. on `apt-get update`.
 
-  - An in-tot root layout must be present on the client system, the
+  - An in-toto root layout must be present on the client system, the
     path may be specified in the method's config file, i.e.
       `/etc/apt/apt.conf.d/intoto`.
   - Corresponding layout root keys must be present in the client gpg chain
@@ -61,10 +61,10 @@
   After that the normal message flow continues.
 
   Below diagram depicts the message flow between apt, intoto and http (process
-  hierarchy left to right) to succesfully download a debian package and perform
-  in-toto verification. Note that intoto or http may send 10x logging or status
-  messages or 40x failure messages, depending on the status/results of their
-  work.
+  hierarchy left to right) to successfully download a debian package and
+  perform in-toto verification. Note that intoto or http may send 10x logging
+  or status messages or 40x failure messages, depending on the status/results
+  of their work.
 
 
                 APT
