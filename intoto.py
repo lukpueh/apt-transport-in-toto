@@ -130,32 +130,46 @@ APT_METHOD_HTTP = os.path.join(os.path.dirname(sys.argv[0]), "http")
 # an unlimited number of 600 messages.
 
 # Message types by their status code. Each message type has an "info" and
-# and the a list of allowed fields. APT_MESSAGE_TYPES may be used to verify
+# and the a list of allowed fields. MESSAGE_TYPE may be used to verify
 # the format of the received messages.
-APT_MESSAGE_TYPES = {
+CAPABILITES = 100
+LOG = 101
+STATUS = 102
+URI_START = 200
+URI_DONE = 201
+URI_FAILURE = 400
+GENERAL_FAILURE = 401
+AUTH_REQUIRED = 402
+MEDIA_FAILURE = 403
+URI_ACQUIRE = 600
+CONFIGURATION = 601
+AUTH_CREDENTIALS = 602
+MEDIA_CHANGED = 603
+
+MESSAGE_TYPE = {
   # Method capabilities
-  100: {
+  CAPABILITES: {
     "info": "Capabilities",
     "fields": ["Version", "Single-Instance", "Pre-Scan", "Pipeline",
         "Send-Config", "Needs-Cleanup"]
   },
   # General Logging
-  101: {
+  LOG: {
     "info": "Log",
     "fields": ["Message"]
   },
   # Inter-URI status reporting (login progress)
-  102: {
+  STATUS: {
     "info": "Status",
     "fields": ["Message"]
   },
   # URI is starting acquire
-  200: {
+  URI_START: {
     "info": "URI Start",
     "fields": ["URI", "Size", "Last-Modified", "Resume-Point"]
   },
   # URI is finished acquire
-  201: {
+  URI_DONE: {
     "info": "URI Done",
     "fields": ["URI", "Size", "Last-Modified", "Filename", "MD5-Hash",
       # NOTE: Although not documented we need to include all these hash algos
@@ -163,42 +177,42 @@ APT_MESSAGE_TYPES = {
       "MD5Sum-Hash", "SHA1-Hash", "SHA256-Hash", "SHA512-Hash"]
   },
   # URI has failed to acquire
-  400: {
+  URI_FAILURE: {
     "info": "URI Failure",
     "fields": ["URI", "Message"]
   },
   # Method did not like something sent to it
-  401: {
+  GENERAL_FAILURE: {
     "info": "General Failure",
     "fields": ["Message"]
   },
   # Method requires authorization to access the URI. Authorization is User/Pass
-  402: {
+  AUTH_REQUIRED: {
     "info": "Authorization Required",
     "fields": ["Site"]
   },
   # Method requires a media change
-  403: {
+  MEDIA_FAILURE: {
     "info": "Media Failure",
     "fields": ["Media", "Drive"]
   },
   # Request a URI be acquired
-  600: {
+  URI_ACQUIRE: {
     "info": "URI Acquire",
     "fields": ["URI", "Filename", "Last-Modified"]
   },
   # Sends the configuration space
-  601: {
+  CONFIGURATION: {
     "info": "Configuration",
     "fields": ["Config-Item"]
   },
   # Response to the 402 message
-  602: {
+  AUTH_CREDENTIALS: {
     "info": "Authorization Credentials",
     "fields": ["Site", "User", "Password"]
   },
   # Response to the 403 message
-  603: {
+  MEDIA_CHANGED: {
     "info": "Media Changed",
     "fields": ["Media", "Fail"]
   }
@@ -210,7 +224,7 @@ def deserialize_one(message_str):
   dictionary that contains message header status code and info and an optional
   fields dictionary of additional headers and their values.
 
-  Raise Exception if the message is malformed. See APT_MESSAGE_TYPES for
+  Raise Exception if the message is malformed. See MESSAGE_TYPE for
   details about formats.
   NOTE: We are pretty strict about the format of messages that we receive.
   Given the vagueness of the specification, we might be too strict.
@@ -241,12 +255,12 @@ def deserialize_one(message_str):
     raise Exception("Invalid message header: {}".format(message_header))
 
   code = int(message_header_parts.pop(0))
-  if code not in APT_MESSAGE_TYPES.keys():
+  if code not in MESSAGE_TYPE.keys():
     raise Exception("Invalid message header status code: {}".format(code))
 
   # TODO: Are we too strict about the format (should we not care about info?)
   info = " ".join(message_header_parts).strip()
-  if info != APT_MESSAGE_TYPES[code]["info"]:
+  if info != MESSAGE_TYPE[code]["info"]:
     raise Exception("Invalid message header info for status code {}: {}"
         .format(code, info))
 
@@ -265,7 +279,7 @@ def deserialize_one(message_str):
 
     field_name = header_field_parts.pop(0).strip()
 
-    if field_name not in APT_MESSAGE_TYPES[code]["fields"]:
+    if field_name not in MESSAGE_TYPE[code]["fields"]:
       logger.warning("Unsupported header field for message code {}: {}"
           .format(code, field_name))
 
@@ -300,7 +314,7 @@ def serialize_one(message_data):
   # Code must be present
   code = message_data["code"]
   # Convenience (if info not present, info for code is used )
-  info = message_data.get("info") or APT_MESSAGE_TYPES[code]["info"]
+  info = message_data.get("info") or MESSAGE_TYPE[code]["info"]
 
   # Add message header
   message_str += "{} {}\n".format(code, info)
