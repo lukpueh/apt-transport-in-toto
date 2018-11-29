@@ -360,14 +360,22 @@ def loop():
   http_queue = Queue.Queue()
   http_thread = threading.Thread(target=read_to_queue, args=(http_proc.stdout,
       http_queue))
-  http_thread.daemon = True
-  http_thread.start()
 
   # APT message reader thread to add messages from apt (parent process)
   # to a corresponding queue.
   apt_queue = Queue.Queue()
   apt_thread = threading.Thread(target=read_to_queue, args=(sys.stdin,
       apt_queue))
+
+  # Start both threads in daemon mode, i.e. they will exit (no matter what) if
+  # the main program exits below. This is required because the threads might
+  # block on `readline` on their corresponding streams, giving us no way of
+  # signalling them to exit terminate gracefully
+  # TODO: Maybe we can use `select` to poll the streams for available data
+  # before doing a blocking `readline`. So far, however, I did not manage to
+  # use `select` the desired way.
+  http_thread.daemon = True
+  http_thread.start()
   apt_thread.daemon = True
   apt_thread.start()
 
