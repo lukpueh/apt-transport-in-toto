@@ -379,6 +379,86 @@ def read_to_queue(stream, queue):
     queue.put(msg)
 
 
+# Dict to keep some global state, i.e. we need information from earlier
+# messages (e.g. CONFIGURATION) when doing in-toto verification upon URI_DONE.
+global_info = {
+  "config": {},
+}
+
+def handle(message_data):
+  """Handle passed message to parse configuration and perform in-toto
+  verification. The format of message_data is:
+  {
+    "code": <status code>,
+    "info": "<status info>",
+    "fields": [
+      ("<header field name>", "<value>"),
+    ]
+  }
+  Return a boolean value that can be used to decide, whether the message should
+  be relayed or not.
+
+  """
+  # Parse out configuration data
+  if message_data["code"] == CONFIGURATION:
+    # TODO: Call function to parse in-toto related config items
+    # (reproducer URL, layout path, gpg keyid(s) or pem file path(s)), and
+    # add them to our `global_info` dict, the function could look something
+    # like:
+    # for name, value in message_data["fields"].iteritems():
+    #   if name == "Config-Item" and value.startswith("APT::intoto::"):
+    #     global_info["config"][value_parts[0]] = value_parts[1]
+    pass
+
+  elif message_data["code"] == URI_ACQUIRE:
+    # TODO: Should cache URIs that apt wants us to download? We could take
+    # a look at the `Index-File` header field to later decide if we try
+    # to fetch link metadata for this file.
+    pass
+
+  elif message_data["code"] == URI_DONE:
+    # The http transport has downloaded the package requested by apt and
+    # sends an URI_DONE to signal that the package can be installed. Here's
+    # an example deserialized URI_DONE message:
+
+    # {
+    #   'code': 201,
+    #   'info': 'URI Done'
+    #   'fields': [
+    #     ('URI', 'intoto://www.example.com/~foo/debian/pool/main/cowsay_3.03+dfsg1-10_all.deb'),
+    #     ('Filename', '/var/cache/apt/archives/partial/cowsay_3.03+dfsg1-10_all.deb'),
+    #     ('Size', '20020'),
+    #     ('Last-Modified', 'Mon, 26 Nov 2018 14:39:07 GMT'),
+    #     ('MD5-Hash', '071b...'),
+    #     ('MD5Sum-Hash', '071b...'),
+    #     ('SHA1-Hash', '3794...'),
+    #     ('SHA256-Hash', 'fd04...'),
+    #     ('SHA512-Hash','95bc...')
+    #   ],
+    # }
+
+    # TODO:
+    # Optionally check global_info if this the corresponding URI_ACQUIRE told
+    # us that this is an Index-File and skip in-toto verification if yes
+    # 1. Create temp dir
+    # 2. download link metadata from reproducer (see config in global_info)
+    # 3. move final product, i.e. debian package to temp dir
+    # 4. run in-toto verification using the specified layout and keys (see
+    # config in global_info)
+    # 5.a. Return True on successful verification, i.e. URI_DONE is relayed
+    # to apt, which will install the package
+    # 5.b. Send URI_FAILURE or GENERAL_FAILURE to apt if verification
+    # fails and return False, i.e. URI_DONE is not relayed.
+    #
+    # Optionally send STATUS or LOG messages to apt, while doing all of above
+    # To send these messages to apt use
+    # `write_one(serialize_message(<msg dict in above format>), sys.stdout)`
+    pass
+
+  # All good, we can relay the message
+  return True
+
+
 def loop():
   """Main in-toto http transport method loop to relay messages between apt and
   the apt http transport method and inject in-toto verification upon reception
@@ -426,18 +506,22 @@ def loop():
 
       try:
         message = queue.get_nowait()
+        message_data = deserialize_one(message)
+
       except Queue.Empty:
         continue
 
-      # TODO: in-toto verification on 201 URI Done
-      # The http transport sends a 201 URI Done when it has downloaded the
-      # target debian package. 201 signals apt that the package can be
-      # installed. This would be a good moment to download in-toto link
-      # metadata and and perform in-toto verification. We can inform apt
-      # about our work with 210x status messages or 40x error messages and
-      # eventually, if verification succeeds relay 201 URI Done.
+      # De-serialization error: Skip message handling, but do relay.
+      except Exception as e:
+        logger.warning(e)
 
-      write_one(message, out)
+      else:
+        # Read config, perform in-toto verification in there we also
+        # decide whether we should relay the message or not.
+        should_relay = handle(message_data)
+
+      if should_relay:
+        write_one(message, out)
 
     # Exit when apt thread is done (apt has sent EOF) and there are no more
     # messages left in the queue
