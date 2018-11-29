@@ -27,7 +27,7 @@
     a `600 URI Acquire` message for a debian package.
   - Verification is not performed on `apt-get update`, i.e. when we receive
     a `600 URI Acquire` message with a header field `Index-File: true`.
-  - A root layout must be present on the client system, the 
+  - A root layout must be present on the client system, the
     path may be specified in the method's config file
     `/etc/apt/apt.conf.d/intoto`.
   - Corresponding layout root keys must be present in the client gpg chain
@@ -375,8 +375,6 @@ def loop():
   # queue, and relay them to the corresponding streams, injecting in-toto
   # verification upon reception of a particular message.
   while True:
-    # Terminate when apt sends an EOF
-    if not apt_thread.is_alive():
     for queue, out in [
         (apt_queue, http_proc.stdin),
         (http_queue, sys.stdout)]:
@@ -396,8 +394,15 @@ def loop():
 
       write_one(message, out)
 
+    # Exit when apt thread is done (apt has sent EOF) and there are no more
+    # messages left in the queue
+    # TODO: Race condition!!?
+    # Unfortunately, the http transport does not tell us when it is done
+    # sending messages (no EOF). So it could happen that apt is finished, both
+    # queues are empty, but http is not done yet.
+    if (not apt_thread.is_alive() and
+        apt_queue.empty() and http_queue.empty()):
       return
-
 
 if __name__ == "__main__":
   loop()
