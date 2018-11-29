@@ -84,6 +84,7 @@ import os
 import sys
 import time
 import threading
+import Queue
 import logging
 import logging.handlers
 import subprocess32 as subprocess
@@ -327,10 +328,9 @@ def write_one(message_str, stream):
   stream.write(message_str)
   stream.flush()
 
-def read_to_queue(stream, queue, lock):
+def read_to_queue(stream, queue):
   """Loop to read messages one at a time from the passed stream until EOF, i.e.
-  the returned message is None, and write to the passed queue using the passed
-  lock.
+  the returned message is None, and write to the passed queue.
 
   """
   while True:
@@ -338,9 +338,7 @@ def read_to_queue(stream, queue, lock):
     if not msg:
       return None
 
-    lock.acquire()
-    queue.append(msg)
-    lock.release()
+    queue.put(msg)
 
 
 
@@ -357,56 +355,47 @@ def loop():
   http_proc = subprocess.Popen([APT_METHOD_HTTP], stdin=subprocess.PIPE,
       stdout=subprocess.PIPE)
 
-  # Locks for threads
-  # TODO: Maybe we can use Queue.Queue, which handles locks internally,
-  # instead of simple homemade list queues. Or maybe we don't need locks at all
-  # since we it is used to separate read and write (and not write and write)?
-  http_lock = threading.Lock()
-  apt_lock = threading.Lock()
-
   # HTTP transport message reader thread to add messages from the http
   # transport (subprocess) to a corresponding queue.
-  http_queue = []
+  http_queue = Queue.Queue()
   http_thread = threading.Thread(target=read_to_queue, args=(http_proc.stdout,
-      http_queue, http_lock))
+      http_queue))
   http_thread.daemon = True
   http_thread.start()
 
   # APT message reader thread to add messages from apt (parent process)
   # to a corresponding queue.
-  apt_queue = []
+  apt_queue = Queue.Queue()
   apt_thread = threading.Thread(target=read_to_queue, args=(sys.stdin,
-      apt_queue, apt_lock))
+      apt_queue))
   apt_thread.daemon = True
   apt_thread.start()
-
 
   # Main loop to get messages from queues, i.e. apt queue and http transport
   # queue, and relay them to the corresponding streams, injecting in-toto
   # verification upon reception of a particular message.
   while True:
-    for queue, lock, out in \
-        [(apt_queue, apt_lock, http_proc.stdin),
-         (http_queue, http_lock, sys.stdout)]:
-
-      lock.acquire()
-      if len(queue):
-        message = queue.pop(0)
-
-        # TODO: in-toto verification on 201 URI Done
-        # The http transport sends a 201 URI Done when it has downloaded the
-        # target debian package. 201 signals apt that the package can be
-        # installed. This would be a good moment to download in-toto link
-        # metadata and and perform in-toto verification. We can inform apt
-        # about our work with 210x status messages or 40x error messages and
-        # eventually, if verification succeeds relay 201 URI Done.
-
-        write_one(message, out)
-
-      lock.release()
-
     # Terminate when apt sends an EOF
     if not apt_thread.is_alive():
+    for queue, out in [
+        (apt_queue, http_proc.stdin),
+        (http_queue, sys.stdout)]:
+
+      try:
+        message = queue.get_nowait()
+      except Queue.Empty:
+        continue
+
+      # TODO: in-toto verification on 201 URI Done
+      # The http transport sends a 201 URI Done when it has downloaded the
+      # target debian package. 201 signals apt that the package can be
+      # installed. This would be a good moment to download in-toto link
+      # metadata and and perform in-toto verification. We can inform apt
+      # about our work with 210x status messages or 40x error messages and
+      # eventually, if verification succeeds relay 201 URI Done.
+
+      write_one(message, out)
+
       return
 
 
