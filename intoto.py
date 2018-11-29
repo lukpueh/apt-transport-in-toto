@@ -16,20 +16,24 @@
   Provide an in-toto transport method for apt to perform in-toto
   verification using in-toto link metadata fetched from a rebuilder.
 
-  - This program must be available as executable in
+  - This program must be installed as executable in
       `/usr/lib/apt/methods/intoto`.
-  - The in-toto transport can be used by adding the `intoto` method name to
-    URIs in `/etc/apt/sources.list` or `/etc/apt/sources.list.d/*`, e.g.
+  - It is executed for package sources in `/etc/apt/sources.list` or
+    `/etc/apt/sources.list.d/*`, that have an `intoto` method prefix, e.g.
       `deb intoto://ftp.us.debian.org/debian/ jessie main contrib`
   - The in-toto transport uses the http transport to download the target debian
     packages.
-  - Verification is performed on `apt-get install`, i.e. when we receive
-    a `600 URI Acquire` message for a debian package.
-  - Verification is not performed on `apt-get update`, i.e. when we receive
-    a `600 URI Acquire` message with a header field `Index-File: true`.
-  - A root layout must be present on the client system, the
-    path may be specified in the method's config file
-    `/etc/apt/apt.conf.d/intoto`.
+  - Verification is performed on `apt-get install`, i.e. after the http
+    transport has downloaded the package requested by apt and signals apt to
+    install it, by sending the `201 URI Done` message.
+  - Further messages may be intercepted from apt, e.g.
+      `601 Configuration` to parse `Config-Item`s, or
+      `600 URI Acquire` to check if a requested URI is an index file
+      (`Index-File: true`), issued, e.g. on `apt-get update`.
+
+  - An in-tot root layout must be present on the client system, the
+    path may be specified in the method's config file, i.e.
+      `/etc/apt/apt.conf.d/intoto`.
   - Corresponding layout root keys must be present in the client gpg chain
   - The base path of the remote rebuilder that hosts in-toto link metadata may
     be specified in the client method config file.
@@ -38,46 +42,62 @@
   - That information may also be used for in-toto layout parameter
     substitution.
 
-
-<Resources>
-  APT method interface
-  http://www.fifi.org/doc/libapt-pkg-doc/method.html/ch2.html
-
-  Apt Configuration
-  See https://manpages.debian.org/stretch/apt/apt.conf.5.en.html for syntax
-
-  Apt sources list syntax
-  See https://wiki.debian.org/SourcesList
-
-
-  The flow of messages starts with the method sending out a 100 Capabilities
+<Workflow>
+  From the APT method interface definition::
+  "The flow of messages starts with the method sending out a 100 Capabilities
   and APT sending out a 601 Configuration. After that APT begins sending 600
   URI Acquire and the method sends out 200 URI Start, 201 URI Done or 400 URI
   Failure. No synchronization is performed, it is expected that APT will send
   600 URI Acquire messages at -any- time and that the method should queue the
   messages. This allows methods like http to pipeline requests to the remote
   server. It should be noted however that APT will buffer messages so it is not
-  necessary for the method to be constantly ready to receive them.
+  necessary for the method to be constantly ready to receive them."
+
+  NOTE: From what I've seen in the message flow between apt and the http
+  transport, apt always starts the http transport subprocess twice. When apt
+  receives the 100 Capabilities message from the http transport it starts the
+  transport again, and sends a 601 Configuration message. The restart prompts
+  the http transport to resend 100 Capabilities, which probably gets ignored.
+  After that the normal message flow continues.
+
+  Below diagram depicts the message flow between apt, intoto and http (process
+  hierarchy left to right) to succesfully download a debian package and perform
+  in-toto verification. Note that intoto or http may send 10x logging or status
+  messages or 40x failure messages, depending on the status/results of their
+  work.
 
 
-                    method                      APT
-                      +                          +
-                      |     100 Capabilities     |
-                      | +----------------------> |
-                      |                          |
-                      |     601 Configuration    |
-                      | <----------------------+ |
-                      |                          |
-                      |      600 URI Acquire     |
-                      | <----------------------+ |
-                      |                          |
-                      |      200 URI Start       |
-                      | +----------------------> |
-            Download  |                          |
-            and write |                          |
-            to file   |       201 URI Done       |
-                      | +----------------------> |
+                APT
+                 +                   intoto
+                 |                     +                    http
+                 |                     |                     +
+                 |         ...         |  100 Capabilities   |
+                 | <-----------------+ | <-----------------+ |
+                 |   601 Configuration |         ...         |
+                 | +-----------------> | +-----------------> |
+                 |   600 URI Acquire   |         ...         |
+                 | +-----------------> | +-----------------> |
+                 |         ...         |     200 URI Start   |
+                 | <-----------------+ | <-----------------+ |
+                 |                     |                  Download package
+                 |                     |                  from archive
+                 |                     |    201 URI Done     |
+                 |                     + <-----------------+ |
+                 |             Download in-toto links        |
+                 |             and verify package            |
+                 |    201 URI Done     |                     |
+                 + <-----------------+ +                     +
 
+
+<Resources>
+  APT method interface
+  http://www.fifi.org/doc/libapt-pkg-doc/method.html/ch2.html
+
+  Apt Configuration
+  https://manpages.debian.org/stretch/apt/apt.conf.5.en.html
+
+  Apt sources list syntax
+  https://wiki.debian.org/SourcesList
 
 """
 import os
@@ -296,7 +316,6 @@ def serialize_one(message_data):
   return message_str
 
 
-
 def read_one(stream):
   """Read one apt related message from the passed stream, e.g. sys.stdin for
   messages from apt, or subprocess.stdout for messages from a transport that we
@@ -321,12 +340,14 @@ def read_one(stream):
 
   return None
 
+
 def write_one(message_str, stream):
   """Write the passed message to the passed stream.
 
   """
   stream.write(message_str)
   stream.flush()
+
 
 def read_to_queue(stream, queue):
   """Loop to read messages one at a time from the passed stream until EOF, i.e.
@@ -339,7 +360,6 @@ def read_to_queue(stream, queue):
       return None
 
     queue.put(msg)
-
 
 
 def loop():
