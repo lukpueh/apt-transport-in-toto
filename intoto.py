@@ -103,6 +103,7 @@
 import os
 import sys
 import time
+import signal
 import threading
 import Queue
 import logging
@@ -534,4 +535,8 @@ def loop():
       return
 
 if __name__ == "__main__":
+  # FIXME: We should probably relay the SIGINT from apt to the http transport
+  def signal_handler(signal, frame):
+    pass
+  signal.signal(signal.SIGINT, signal_handler)
   loop()
