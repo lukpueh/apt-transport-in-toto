@@ -119,6 +119,15 @@ logger.addHandler(logging.handlers.RotatingFileHandler(LOG_FILE))
 
 APT_METHOD_HTTP = os.path.join(os.path.dirname(sys.argv[0]), "http")
 
+# Global interrupted boolean. Apt may send SIGINT if it is done with its work.
+# Upon reception we set INTERRUPTED to true, which may be used to gracefully
+# terminate.
+INTERRUPTED = False
+def signal_handler(signal, frame):
+  # Set global INTERRUPTED flag telling worker threads to terminate
+  global INTERRUPTED
+  INTERRUPTED = True
+
 # APT Method Interface Message definition
 # The first line of each message is called the message header. The first 3
 # digits (called the Status Code) have the usual meaning found in the http
@@ -344,7 +353,8 @@ def read_one(stream):
 
   """
   message_str = ""
-  while True:
+  # Read from passed stream until apt sends us a SIGINT or EOF (see below)
+  while not INTERRUPTED:
     # Only read if there is data on the stream (non-blocking)
     if not select.select([stream], [], [], 0)[0]:
       continue
@@ -359,7 +369,7 @@ def read_one(stream):
     # If we read something append it to the message string
     message_str += one
 
-    # Break on EOM
+    # Break on EOM (and return message below)
     if len(message_str) >= 2 and message_str[-2:] == "\n\n":
       break
 
@@ -496,16 +506,9 @@ def loop():
   apt_thread = threading.Thread(target=read_to_queue, args=(sys.stdin,
       apt_queue))
 
-  # Start both threads in daemon mode, i.e. they will exit (no matter what) if
-  # the main program exits below. This is required because the threads might
-  # block on `readline` on their corresponding streams, giving us no way of
-  # signalling them to exit terminate gracefully
-  # TODO: Maybe we can use `select` to poll the streams for available data
-  # before doing a blocking `readline`. So far, however, I did not manage to
-  # use `select` the desired way.
-  http_thread.daemon = True
+  # Start reader threads. They will run until they see an EOF on their stream
+  # or the global INTERRUPTED flag is set to true (on SIGINT from apt).
   http_thread.start()
-  apt_thread.daemon = True
   apt_thread.start()
 
   # Main loop to get messages from queues, i.e. apt queue and http transport
@@ -535,19 +538,17 @@ def loop():
       if should_relay:
         write_one(message, out)
 
-    # Exit when apt thread is done (apt has sent EOF) and there are no more
-    # messages left in the queue
-    # TODO: Race condition!!?
-    # Unfortunately, the http transport does not tell us when it is done
-    # sending messages (no EOF). So it could happen that apt is finished, both
-    # queues are empty, but http is not done yet.
-    if (not apt_thread.is_alive() and
-        apt_queue.empty() and http_queue.empty()):
+    # Exit when both threads have terminated (on EOF or INTERRUPTED)
+    # NOTE: We do not check if there are still messages on the streams or
+    # in the queue, assuming that there aren't or we can ignore them if both
+    # threads have terminated.
+    if (not apt_thread.is_alive() and not http_thread.is_alive()):
+      # If apt has sent us a SIGINT we relay it to the subprocess
+      if INTERRUPTED:
+        http_proc.send_signal(signal.SIGINT)
       return
 
+
 if __name__ == "__main__":
-  # FIXME: We should probably relay the SIGINT from apt to the http transport
-  def signal_handler(signal, frame):
-    pass
   signal.signal(signal.SIGINT, signal_handler)
   loop()
