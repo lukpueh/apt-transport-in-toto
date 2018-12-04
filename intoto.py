@@ -114,7 +114,7 @@ import subprocess32 as subprocess
 # TODO: Should we setup a SysLogHandler and write to /var/log/apt/intoto ?
 LOG_FILE = "/tmp/intoto.log"
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.WARNING)
 logger.addHandler(logging.handlers.RotatingFileHandler(LOG_FILE))
 
 APT_METHOD_HTTP = os.path.join(os.path.dirname(sys.argv[0]), "http")
