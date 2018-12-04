@@ -104,6 +104,7 @@ import os
 import sys
 import time
 import signal
+import select
 import threading
 import Queue
 import logging
@@ -344,15 +345,25 @@ def read_one(stream):
   """
   message_str = ""
   while True:
-    # Blocking read of line from the stream, includes trailing newline char.
-    line = stream.readline()
-    if line:
-      message_str += line
+    # Only read if there is data on the stream (non-blocking)
+    if not select.select([stream], [], [], 0)[0]:
+      continue
 
-    # Break on EOM or EOF
-    if not line or line == "\n":
+    # Read one byte from the stream
+    one = os.read(stream.fileno(), 1)
+
+    # Break on EOF
+    if not one:
       break
 
+    # If we read something append it to the message string
+    message_str += one
+
+    # Break on EOM
+    if len(message_str) >= 2 and message_str[-2:] == "\n\n":
+      break
+
+  # Return a message if there is one, otherwise return None
   if message_str:
     return message_str
 
